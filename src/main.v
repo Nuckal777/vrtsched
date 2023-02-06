@@ -3,18 +3,19 @@ A task set produces jobs for a given point in time.
 Across scheduling we track the list of job specs as well as their status.
 
 When scheduling a timeslice of unit length is considered at each iteration.
-The priorization of jobs is defined by a PrioritizeFn (e.g. RMS, EDF) which puts the jobs 
+The priorization of jobs is defined by a PrioritizeFn (e.g. RMS, EDF) which puts the jobs
 to be scheduled first. Then at most core count jobs are out into the current timeslice.
 That is sufficient to implement global scheduling though it does not minizie context switches.
 
 Partioning algorithms are defined by a PartitionFn, SortFn as well as a FitFn.
-The SortFn defines how the task set is ordederd (e.g. by period or utilization) before 
-partioning. The PartioninFn dustributes a tasks set onto the cores (e.g. first fit or 
+The SortFn defines how the task set is ordederd (e.g. by period or utilization) before
+partioning. The PartioninFn dustributes a tasks set onto the cores (e.g. first fit or
 next fit) using the FitFn (Liu-Layland or Hyperbolic Bound) to determine when a core is full.
 */
 
 module main
 
+import arrays
 import math
 
 struct Task {
@@ -110,6 +111,32 @@ fn (ts TaskSet) sum_util() f32 {
 	return acc
 }
 
+fn (ts TaskSet) min_period() int {
+	return arrays.min(ts.tasks.map(it.period)) or { 0 }
+}
+
+fn (ts TaskSet) valid() bool {
+	return !ts.tasks.any(it.util() > 1.0)
+}
+
+// may produce non-simple periodic task sets due to
+// periods being integers in this model
+fn (ts TaskSet) specialization_operation() []TaskSet {
+	min := ts.min_period()
+	mut sets := [][]Task{}
+	for pivot in ts.tasks {
+		base := pivot.period / math.pow(2, math.ceil(math.log2(pivot.period / min)))
+		mut set := []Task{}
+		for t in ts.tasks {
+			shortend := base * math.pow(2, math.floor(math.log2(t.period / base)))
+			set << new_task(t.id, int(shortend), t.exec)
+		}
+		sets << set
+	}
+	task_sets := sets.map(TaskSet{it})
+	return task_sets.filter(it.valid())
+}
+
 type PrioritizeFn = fn (mut []Job)
 
 fn rate_monotonic_prioritizer(mut jobs []Job) {
@@ -161,8 +188,6 @@ fn (s Schedule) format_schedule() string {
 		for slice in s.timeslices {
 			if i < slice.scheduled.len {
 				text += slice.scheduled[i].spec.id
-			} else {
-				text += '.'
 			}
 		}
 		if i != s.cores - 1 {
@@ -219,6 +244,8 @@ fn (sched &GlobalScheduler) step(mut active []Job, period int) Timeslice {
 		if i < active.len {
 			scheduled << active[i]
 			active[i].status.progress += 1
+		} else {
+			scheduled << idle_job
 		}
 	}
 	// remove if progress == exec
